@@ -23,7 +23,7 @@ impl<Payload> Message<Payload> {
                     *id += 1;
                     mid
                 }),
-                in_reply_to: self.body.in_reply_to,
+                in_reply_to: self.body.id,
                 payload: self.body.payload,
             },
         }
