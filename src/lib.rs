@@ -13,12 +13,12 @@ pub struct Message<Payload> {
 impl<Payload> Message<Payload> {
     /// Converts an incoming message into a reply message with
     /// a new ID.
-    pub fn into_reply(self, id: Option<&mut usize>) -> Self {
+    pub fn into_reply(self, msg_id: Option<&mut usize>) -> Self {
         Self {
             src: self.dst,
             dst: self.src,
             body: Body {
-                id: id.map(|id| {
+                id: msg_id.map(|id| {
                     let mid = *id;
                     *id += 1;
                     mid
