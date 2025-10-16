@@ -1,6 +1,9 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::io::{BufRead, StdoutLock, Write};
+use std::{
+    io::{BufRead, StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message<Payload> {
@@ -74,12 +77,13 @@ struct Error {
 #[derive(Debug, Clone)]
 pub enum Event<Payload> {
     Message(Message<Payload>),
+    Interval,
     EOF,
 }
 
 pub trait Node<Payload> {
     /// Initialises a node based of an init message.
-    fn from_init(init: Init) -> anyhow::Result<Self>
+    fn from_init(init: Init, tx: Sender<Event<Payload>>) -> anyhow::Result<Self>
     where
         Self: Sized;
     /// Consume and act upon a message for the node.
@@ -116,7 +120,7 @@ where
         panic!("First message should be init");
     };
 
-    let mut node: N = Node::from_init(init).context("Node initialisation failed")?;
+    let mut node: N = Node::from_init(init, tx.clone()).context("Node initialisation failed")?;
 
     let reply = Message {
         src: init_msg.dst,
