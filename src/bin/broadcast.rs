@@ -1,7 +1,10 @@
-use std::{collections::HashMap, io::StdoutLock};
+use std::{
+    collections::{HashMap, HashSet},
+    io::StdoutLock,
+};
 
 use anyhow::Context;
-use gossip_glomers::{Event, Init, Node, main_loop};
+use gossip_glomers::{Body, Event, Init, Message, Node, main_loop};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -33,7 +36,8 @@ pub struct Topology {
 struct BroadcastNode {
     id: String,
     msg_id: usize,
-    messages: Vec<usize>,
+    messages: HashSet<usize>,
+    neighbours: Vec<String>,
 }
 
 impl Node<BroadcastPayload> for BroadcastNode {
@@ -44,7 +48,8 @@ impl Node<BroadcastPayload> for BroadcastNode {
         Ok(BroadcastNode {
             id: init.node_id,
             msg_id: 0,
-            messages: Vec::new(),
+            messages: HashSet::new(),
+            neighbours: Vec::new(),
         })
     }
 
@@ -57,23 +62,50 @@ impl Node<BroadcastPayload> for BroadcastNode {
             panic!("Did not receive expected message");
         };
 
-        let mut reply = input.into_reply(Some(&mut self.msg_id));
-
-        match reply.body.payload {
+        match &input.body.payload {
             BroadcastPayload::Broadcast(broadcast) => {
-                self.messages.push(broadcast.message);
+                self.messages.insert(broadcast.message);
+
+                for neighbour in &self.neighbours {
+                    if neighbour == &input.src {
+                        continue;
+                    }
+
+                    Message {
+                        src: self.id.clone(),
+                        dst: neighbour.clone(),
+                        body: Body {
+                            id: None,
+                            in_reply_to: None,
+                            payload: BroadcastPayload::Broadcast(Broadcast {
+                                message: broadcast.message,
+                            }),
+                        },
+                    }
+                    .send(output)
+                    .context("Sending broadcast to neighbour")?;
+                }
+
+                let mut reply = input.into_reply(Some(&mut self.msg_id));
                 reply.body.payload = BroadcastPayload::BroadcastOk;
                 reply.send(output).context("Sending broadcast ok reply")?;
             }
             BroadcastPayload::BroadcastOk => {}
             BroadcastPayload::Read => {
+                let mut reply = input.into_reply(Some(&mut self.msg_id));
                 reply.body.payload = BroadcastPayload::ReadOk(ReadOk {
-                    messages: self.messages.clone(),
+                    messages: self.messages.clone().into_iter().collect(),
                 });
                 reply.send(output).context("Sending read ok reply")?;
             }
             BroadcastPayload::ReadOk(_) => {}
-            BroadcastPayload::Topology(_) => {
+            BroadcastPayload::Topology(topology) => {
+                self.neighbours = topology
+                    .topology
+                    .get(&self.id)
+                    .cloned()
+                    .unwrap_or(Vec::new());
+                let mut reply = input.into_reply(Some(&mut self.msg_id));
                 reply.body.payload = BroadcastPayload::TopologyOk;
                 reply.send(output).context("Sending topology ok reply")?;
             }
