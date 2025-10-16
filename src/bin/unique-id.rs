@@ -1,4 +1,4 @@
-use std::io::StdoutLock;
+use std::{io::StdoutLock, sync::mpsc::Sender};
 
 use anyhow::Context;
 use gossip_glomers::{Event, Init, Node, main_loop};
@@ -22,7 +22,7 @@ struct UniqueIdNode {
 }
 
 impl Node<UniqueIdPayload> for UniqueIdNode {
-    fn from_init(init: Init) -> anyhow::Result<Self>
+    fn from_init(init: Init, _: Sender<Event<UniqueIdPayload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {

@@ -1,4 +1,4 @@
-use std::io::StdoutLock;
+use std::{io::StdoutLock, sync::mpsc::Sender};
 
 use anyhow::Context;
 use gossip_glomers::{Event, Init, Node, main_loop};
@@ -21,7 +21,7 @@ struct EchoNode {
 }
 
 impl Node<EchoPayload> for EchoNode {
-    fn from_init(_: Init) -> anyhow::Result<Self>
+    fn from_init(_: Init, _: Sender<Event<EchoPayload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
