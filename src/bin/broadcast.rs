@@ -137,9 +137,9 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     .filter(|n| *n != &self.id)
                     .cloned()
                     .collect();
-                // Select 3 nodes at random to gossip to.
+                // Select nodes at random to gossip to.
                 nodes = nodes
-                    .choose_multiple(&mut rng, 3.min(nodes.len()))
+                    .choose_multiple(&mut rng, 8.min(nodes.len()))
                     .cloned()
                     .collect::<Vec<String>>();
 
