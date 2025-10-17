@@ -117,12 +117,13 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     }
                     BroadcastPayload::TopologyOk => {}
                     BroadcastPayload::Gossip(gossip) => {
-                        self.seen
-                            .get_mut(&reply.dst)
-                            .unwrap_or_else(|| {
-                                panic!("Gossip from unknown node - {}:{}", &self.id, &reply.dst)
-                            })
-                            .extend(gossip.messages.clone());
+                        if let Some(known_node) = self.seen.get_mut(&reply.dst) {
+                            known_node.extend(gossip.messages.clone());
+                        } else {
+                            self.seen
+                                .insert(reply.dst, HashSet::from_iter(gossip.messages.clone()));
+                        }
+
                         // Add to this nodes messages any that have not been seen.
                         self.messages.extend(gossip.messages.clone());
                     }
