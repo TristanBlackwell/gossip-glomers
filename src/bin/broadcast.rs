@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Context;
 use gossip_glomers::{Body, Event, Init, Message, Node, main_loop};
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -48,8 +49,8 @@ struct BroadcastNode {
     messages: HashSet<usize>,
     /// The messages that other nodes have gossiped to this node.
     seen: HashMap<String, HashSet<usize>>,
-    /// Neighbours of this node.
-    neighbours: Vec<String>,
+    /// Other known nodes in the topology.
+    nodes: Vec<String>,
 }
 
 impl Node<BroadcastPayload> for BroadcastNode {
@@ -73,7 +74,7 @@ impl Node<BroadcastPayload> for BroadcastNode {
             msg_id: 0,
             messages: HashSet::new(),
             seen: HashMap::new(),
-            neighbours: Vec::new(),
+            nodes: Vec::new(),
         })
     }
 
@@ -102,14 +103,10 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     }
                     BroadcastPayload::ReadOk(_) => {}
                     BroadcastPayload::Topology(topology) => {
-                        let neighbours = topology
-                            .topology
-                            .get(&self.id)
-                            .cloned()
-                            .unwrap_or(Vec::new());
-                        self.neighbours = neighbours.clone();
-                        for neighbour in &neighbours {
-                            self.seen.insert(neighbour.to_string(), HashSet::new());
+                        let nodes: Vec<String> = topology.topology.keys().cloned().collect();
+                        self.nodes = nodes.clone();
+                        for node in &nodes {
+                            self.seen.insert(node.to_string(), HashSet::new());
                         }
 
                         reply.body.payload = BroadcastPayload::TopologyOk;
@@ -127,15 +124,28 @@ impl Node<BroadcastPayload> for BroadcastNode {
                 }
             }
             Event::Interval => {
-                for neighbour in &self.neighbours {
+                let mut rng = rand::rng();
+                let mut nodes: Vec<_> = self
+                    .nodes
+                    .iter()
+                    .filter(|n| *n != &self.id)
+                    .cloned()
+                    .collect();
+                // Select 3 nodes at random to gossip to.
+                nodes = nodes
+                    .choose_multiple(&mut rng, 3.min(nodes.len()))
+                    .cloned()
+                    .collect::<Vec<String>>();
+
+                for node in &nodes {
                     // Messages we've seen from the neighbour.
-                    let known = self.seen.get(neighbour).cloned().unwrap_or(HashSet::new());
+                    let known = self.seen.get(node).cloned().unwrap_or(HashSet::new());
                     // Messages we have that the neighbour does not (that we are aware of)
                     let not_seen: Vec<usize> = self.messages.difference(&known).cloned().collect();
 
                     Message {
                         src: self.id.clone(),
-                        dst: neighbour.clone(),
+                        dst: node.clone(),
                         body: Body {
                             id: None,
                             in_reply_to: None,
