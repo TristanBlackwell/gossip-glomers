@@ -42,8 +42,13 @@ pub struct Gossip {
 
 struct BroadcastNode {
     id: String,
+    /// ID of the last message this node sent
     msg_id: usize,
+    /// Messages that have been broadcast or gossiped to this node
     messages: HashSet<usize>,
+    /// The messages that other nodes have gossiped to this node.
+    seen: HashMap<String, HashSet<usize>>,
+    /// Neighbours of this node.
     neighbours: Vec<String>,
 }
 
@@ -52,6 +57,7 @@ impl Node<BroadcastPayload> for BroadcastNode {
     where
         Self: Sized,
     {
+        // Fire an `interval` event every 300 millseconds
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(300));
@@ -66,6 +72,7 @@ impl Node<BroadcastPayload> for BroadcastNode {
             id: init.node_id,
             msg_id: 0,
             messages: HashSet::new(),
+            seen: HashMap::new(),
             neighbours: Vec::new(),
         })
     }
@@ -76,49 +83,58 @@ impl Node<BroadcastPayload> for BroadcastNode {
         output: &mut StdoutLock,
     ) -> anyhow::Result<()> {
         match input {
-            Event::Message(input) => match &input.body.payload {
-                BroadcastPayload::Broadcast(broadcast) => {
-                    self.messages.insert(broadcast.message);
+            Event::Message(input) => {
+                let mut reply = input.into_reply(Some(&mut self.msg_id));
 
-                    let mut reply = input.into_reply(Some(&mut self.msg_id));
-                    reply.body.payload = BroadcastPayload::BroadcastOk;
-                    reply.send(output).context("Sending broadcast ok reply")?;
+                match reply.body.payload {
+                    BroadcastPayload::Broadcast(broadcast) => {
+                        self.messages.insert(broadcast.message);
+
+                        reply.body.payload = BroadcastPayload::BroadcastOk;
+                        reply.send(output).context("Sending broadcast ok reply")?;
+                    }
+                    BroadcastPayload::BroadcastOk => {}
+                    BroadcastPayload::Read => {
+                        reply.body.payload = BroadcastPayload::ReadOk(ReadOk {
+                            messages: self.messages.clone().into_iter().collect(),
+                        });
+                        reply.send(output).context("Sending read ok reply")?;
+                    }
+                    BroadcastPayload::ReadOk(_) => {}
+                    BroadcastPayload::Topology(topology) => {
+                        self.neighbours = topology
+                            .topology
+                            .get(&self.id)
+                            .cloned()
+                            .unwrap_or(Vec::new());
+                        reply.body.payload = BroadcastPayload::TopologyOk;
+                        reply.send(output).context("Sending topology ok reply")?;
+                    }
+                    BroadcastPayload::TopologyOk => {}
+                    BroadcastPayload::Gossip(gossip) => {
+                        self.seen
+                            .get_mut(&reply.dst)
+                            .expect("Gossip from unknown neighbour")
+                            .extend(gossip.messages.clone());
+                        // Add to this nodes messages any that have not been seen.
+                        self.messages.extend(gossip.messages.clone());
+                    }
                 }
-                BroadcastPayload::BroadcastOk => {}
-                BroadcastPayload::Read => {
-                    let mut reply = input.into_reply(Some(&mut self.msg_id));
-                    reply.body.payload = BroadcastPayload::ReadOk(ReadOk {
-                        messages: self.messages.clone().into_iter().collect(),
-                    });
-                    reply.send(output).context("Sending read ok reply")?;
-                }
-                BroadcastPayload::ReadOk(_) => {}
-                BroadcastPayload::Topology(topology) => {
-                    self.neighbours = topology
-                        .topology
-                        .get(&self.id)
-                        .cloned()
-                        .unwrap_or(Vec::new());
-                    let mut reply = input.into_reply(Some(&mut self.msg_id));
-                    reply.body.payload = BroadcastPayload::TopologyOk;
-                    reply.send(output).context("Sending topology ok reply")?;
-                }
-                BroadcastPayload::TopologyOk => {}
-                BroadcastPayload::Gossip(gossip) => {
-                    self.messages.extend(gossip.messages.clone());
-                }
-            },
+            }
             Event::Interval => {
                 for neighbour in &self.neighbours {
+                    // Messages we've seen from the neighbour.
+                    let known = self.seen.get(neighbour).cloned().unwrap_or(HashSet::new());
+                    // Messages we have that the neighbour does not (that we are aware of)
+                    let not_seen: Vec<usize> = self.messages.difference(&known).cloned().collect();
+
                     Message {
                         src: self.id.clone(),
                         dst: neighbour.clone(),
                         body: Body {
                             id: None,
                             in_reply_to: None,
-                            payload: BroadcastPayload::Gossip(Gossip {
-                                messages: self.messages.clone().into_iter().collect(),
-                            }),
+                            payload: BroadcastPayload::Gossip(Gossip { messages: not_seen }),
                         },
                     }
                     .send(output)
