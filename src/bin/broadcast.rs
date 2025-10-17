@@ -50,7 +50,7 @@ struct BroadcastNode {
     /// The messages that other nodes have gossiped to this node.
     seen: HashMap<String, HashSet<usize>>,
     /// Other known nodes in the topology.
-    nodes: Vec<String>,
+    nodes: HashSet<String>,
 }
 
 impl Node<BroadcastPayload> for BroadcastNode {
@@ -74,7 +74,7 @@ impl Node<BroadcastPayload> for BroadcastNode {
             msg_id: 0,
             messages: HashSet::new(),
             seen: HashMap::new(),
-            nodes: Vec::new(),
+            nodes: HashSet::new(),
         })
     }
 
@@ -103,10 +103,13 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     }
                     BroadcastPayload::ReadOk(_) => {}
                     BroadcastPayload::Topology(topology) => {
-                        let nodes: Vec<String> = topology.topology.keys().cloned().collect();
-                        self.nodes = nodes.clone();
-                        for node in &nodes {
+                        for (node, neighbours) in &topology.topology {
+                            self.nodes.insert(node.clone());
                             self.seen.insert(node.to_string(), HashSet::new());
+                            for n in neighbours {
+                                self.nodes.insert(n.clone());
+                                self.seen.insert(n.to_string(), HashSet::new());
+                            }
                         }
 
                         reply.body.payload = BroadcastPayload::TopologyOk;
