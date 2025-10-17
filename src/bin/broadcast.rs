@@ -116,7 +116,9 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     BroadcastPayload::Gossip(gossip) => {
                         self.seen
                             .get_mut(&reply.dst)
-                            .expect("Gossip from unknown neighbour")
+                            .unwrap_or_else(|| {
+                                panic!("Gossip from unknown node - {}:{}", &self.id, &reply.dst)
+                            })
                             .extend(gossip.messages.clone());
                         // Add to this nodes messages any that have not been seen.
                         self.messages.extend(gossip.messages.clone());
