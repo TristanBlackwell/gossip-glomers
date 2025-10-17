@@ -102,11 +102,16 @@ impl Node<BroadcastPayload> for BroadcastNode {
                     }
                     BroadcastPayload::ReadOk(_) => {}
                     BroadcastPayload::Topology(topology) => {
-                        self.neighbours = topology
+                        let neighbours = topology
                             .topology
                             .get(&self.id)
                             .cloned()
                             .unwrap_or(Vec::new());
+                        self.neighbours = neighbours.clone();
+                        for neighbour in &neighbours {
+                            self.seen.insert(neighbour.to_string(), HashSet::new());
+                        }
+
                         reply.body.payload = BroadcastPayload::TopologyOk;
                         reply.send(output).context("Sending topology ok reply")?;
                     }
