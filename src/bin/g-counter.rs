@@ -228,6 +228,7 @@ impl Node<GCounterPayload> for GCounterNode {
                         ) {
                             match pending_op.op_type {
                                 OperationType::Read => {
+                                    // wip: Attempt to read and key does not exist
                                     self.msg_id += 1;
                                     Message {
                                         src: self.id.clone(),
@@ -240,6 +241,20 @@ impl Node<GCounterPayload> for GCounterNode {
                                     }
                                     .send(output)
                                     .context("Sending seq kv read")?;
+                                }
+                                OperationType::Write(write) => {
+                                    // wip: Attempt to read and key does not exist (prior to writing the value)
+                                    self.send_seq_kv_cas_request(
+                                        output,
+                                        input.body.id.expect("Read request with no id"),
+                                        input.src,
+                                        SeqKvCas {
+                                            key: "counter".to_string(),
+                                            from: 0,
+                                            to: write.value,
+                                            put: true,
+                                        },
+                                    )?;
                                 }
                                 _op => {
                                     panic!("error response from maelstrom - {:?}:{:?}", error, _op)
