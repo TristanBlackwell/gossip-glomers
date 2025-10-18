@@ -220,7 +220,32 @@ impl Node<GCounterPayload> for GCounterNode {
                         }
                     }
                     GCounterPayload::Error(error) => {
-                        panic!("Received an error from maelstrom: {:?}", error);
+                        if let Some(pending_op) = self.pending_ops.remove(
+                            &input
+                                .body
+                                .in_reply_to
+                                .expect("seq kv cas ok response with no reply to"),
+                        ) {
+                            match pending_op.op_type {
+                                OperationType::Read => {
+                                    self.msg_id += 1;
+                                    Message {
+                                        src: self.id.clone(),
+                                        dst: pending_op.src,
+                                        body: Body {
+                                            id: Some(self.msg_id),
+                                            in_reply_to: input.body.in_reply_to,
+                                            payload: GCounterPayload::ReadOk(ReadOk { value: 0 }),
+                                        },
+                                    }
+                                    .send(output)
+                                    .context("Sending seq kv read")?;
+                                }
+                                _op => {
+                                    panic!("error response from maelstrom - {:?}:{:?}", error, _op)
+                                }
+                            }
+                        }
                     }
                 }
             }
