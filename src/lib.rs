@@ -59,19 +59,12 @@ pub struct Body<Payload> {
 enum InitPayload {
     Init(Init),
     InitOk,
-    Error(Error),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Init {
     pub node_id: String,
     pub node_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Error {
-    code: usize,
-    text: String,
 }
 
 #[derive(Debug, Clone)]

@@ -12,6 +12,7 @@ enum GCounterPayload {
     Read,
     ReadOk(ReadOk),
     CasOk,
+    Error(Error),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -22,6 +23,12 @@ pub struct Add {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReadOk {
     pub value: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Error {
+    code: usize,
+    text: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -211,6 +218,9 @@ impl Node<GCounterPayload> for GCounterNode {
                                 _op => panic!("Unexpected operation from read ok - {:?}", _op),
                             }
                         }
+                    }
+                    GCounterPayload::Error(error) => {
+                        panic!("Received an error from maelstrom: {:?}", error);
                     }
                 }
             }
