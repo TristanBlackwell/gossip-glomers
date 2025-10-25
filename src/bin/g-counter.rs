@@ -227,11 +227,12 @@ impl Node<GCounterPayload> for GCounterNode {
                             &input
                                 .body
                                 .in_reply_to
-                                .expect("seq kv cas ok response with no reply to"),
+                                .expect("seq kv cas error response with no reply to"),
                         ) {
                             match pending_op.op_type {
                                 OperationType::Read => {
-                                    // wip: Attempt to read and key does not exist
+                                    // Attempt to read and key does not exist. We can return 0 since
+                                    // this is equivalent to no key (at least in this use case).
                                     self.msg_id += 1;
                                     Message {
                                         src: self.id.clone(),
@@ -246,7 +247,9 @@ impl Node<GCounterPayload> for GCounterNode {
                                     .context("Sending seq kv read")?;
                                 }
                                 OperationType::Write(write) => {
-                                    // wip: Attempt to read and key does not exist (prior to writing the value)
+                                    // Attempted to read they key (before our CAS operation as we need the current value)
+                                    // and key does not exist. We can bypass this and send the CAS operation now since we
+                                    // now know this is 0 and will insert.
                                     self.send_seq_kv_request(
                                         output,
                                         SeqKvPayload::Cas(SeqKvCas {
@@ -255,7 +258,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                             to: write.value,
                                             put: true,
                                         }),
-                                        input.body.id.expect("Read request with no id"),
+                                        input.body.in_reply_to.expect("Read request with no id"),
                                         input.src,
                                         OperationType::Cas,
                                     )?;
