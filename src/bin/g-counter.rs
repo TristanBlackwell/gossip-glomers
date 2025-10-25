@@ -189,7 +189,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                         put: false,
                                     }),
                                     input.body.id.expect("Read request with no id"),
-                                    input.src,
+                                    pending_op.src,
                                     OperationType::Cas,
                                 )?;
                             }
@@ -218,7 +218,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                     .send(output)
                                     .context("Sending add ok")?;
                                 }
-                                _op => panic!("Unexpected operation from read ok - {:?}", _op),
+                                _op => panic!("Unexpected operation from cas ok - {:?}", _op),
                             }
                         }
                     }
@@ -259,7 +259,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                             put: true,
                                         }),
                                         input.body.in_reply_to.expect("Read request with no id"),
-                                        input.src,
+                                        pending_op.src,
                                         OperationType::Cas,
                                     )?;
                                 }
