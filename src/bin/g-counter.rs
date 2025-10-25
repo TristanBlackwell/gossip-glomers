@@ -114,35 +114,26 @@ impl Node<GCounterPayload> for GCounterNode {
             Event::Message(input) => {
                 match input.body.payload {
                     GCounterPayload::Add(add) => {
-                        self.send_seq_kv_read_request(
+                        // Send a read request to the KV with our write operation. Once
+                        // KV returns the read value we can perform a CAS.
+                        self.send_seq_kv_request(
                             output,
+                            SeqKvPayload::Read(SeqKvRead {
+                                key: "counter".to_string(),
+                            }),
                             input.body.id.expect("Read request with no id"),
                             input.src,
                             OperationType::Write(OperationWrite { value: add.delta }),
                         )?;
-                        // self.msg_id += 1;
-                        // Message {
-                        //     src: self.id,
-                        //     dst: String::from("seq-kv"),
-                        //     body: Body {
-                        //         id: Some(self.msg_id),
-                        //         in_reply_to: None,
-                        //         payload: SeqKvPayload::Write(SeqKvWrite {
-                        //             key: format!("counter-{}", self.id),
-                        //             value: add.delta,
-                        //         }),
-                        //     },
-                        // };
-
-                        // let mut reply = input.into_reply(Some(&mut self.msg_id));
-
-                        // reply.body.payload = GCounterPayload::AddOk;
-                        // reply.send(output).context("Sending add ok reply")?;
                     }
                     GCounterPayload::AddOk => {}
                     GCounterPayload::Read => {
-                        self.send_seq_kv_read_request(
+                        // Send our read request to KV, the ok handler will return the value.
+                        self.send_seq_kv_request(
                             output,
+                            SeqKvPayload::Read(SeqKvRead {
+                                key: "counter".to_string(),
+                            }),
                             input.body.id.expect("Read request with no id"),
                             input.src,
                             OperationType::Read,
@@ -150,47 +141,59 @@ impl Node<GCounterPayload> for GCounterNode {
                     }
                     GCounterPayload::ReadOk(read) => {
                         if input.src != "seq-kv" {
-                            panic!("Received read ok from {}", input.src);
+                            panic!(
+                                "Received unsupported read ok operation '{}'. Only 'seq-kv' is implemented.",
+                                input.src,
+                            );
                         }
 
-                        if let Some(pending_op) = self.pending_ops.remove(
-                            &input
-                                .body
-                                .in_reply_to
-                                .expect("seq kv read response with no reply to"),
-                        ) {
-                            match pending_op.op_type {
-                                OperationType::Read => {
-                                    self.msg_id += 1;
-                                    Message {
-                                        src: self.id.clone(),
-                                        dst: pending_op.src,
-                                        body: Body {
-                                            id: Some(self.msg_id),
-                                            in_reply_to: input.body.in_reply_to,
-                                            payload: GCounterPayload::ReadOk(ReadOk {
-                                                value: read.value,
-                                            }),
-                                        },
-                                    }
-                                    .send(output)
-                                    .context("Sending seq kv read")?;
+                        let in_reply_to = &input
+                            .body
+                            .in_reply_to
+                            .expect("seq kv read response with no 'in_reply_to'");
+
+                        let Some(pending_op) = self.pending_ops.remove(in_reply_to) else {
+                            panic!(
+                                "Could not find pending operation for replying to '{}'",
+                                in_reply_to
+                            );
+                        };
+
+                        match pending_op.op_type {
+                            OperationType::Read => {
+                                // Was a read operation so return the value to the original src.
+                                self.msg_id += 1;
+                                Message {
+                                    src: self.id.clone(),
+                                    dst: pending_op.src,
+                                    body: Body {
+                                        id: Some(self.msg_id),
+                                        in_reply_to: input.body.in_reply_to,
+                                        payload: GCounterPayload::ReadOk(ReadOk {
+                                            value: read.value,
+                                        }),
+                                    },
                                 }
-                                OperationType::Write(write) => {
-                                    self.send_seq_kv_cas_request(
-                                        output,
-                                        input.body.id.expect("Read request with no id"),
-                                        input.src,
-                                        SeqKvCas {
-                                            key: "counter".to_string(),
-                                            from: read.value,
-                                            to: read.value + write.value,
-                                            put: true,
-                                        },
-                                    )?;
-                                }
-                                _op => panic!("Unexpected operation from read ok - {:?}", _op),
+                                .send(output)
+                                .context("Sending read ok")?;
                             }
+                            OperationType::Write(write) => {
+                                // Was a write so with the latest value attempt the CAS operation.
+                                self.send_seq_kv_request(
+                                    output,
+                                    SeqKvPayload::Cas(SeqKvCas {
+                                        key: "counter".to_string(),
+                                        from: read.value,
+                                        to: read.value + write.value,
+                                        // We successfully read the key so wouldn't expect an upsert behaviour here.
+                                        put: false,
+                                    }),
+                                    input.body.id.expect("Read request with no id"),
+                                    input.src,
+                                    OperationType::Cas,
+                                )?;
+                            }
+                            _op => panic!("Unexpected operation from read ok - {:?}", _op),
                         }
                     }
                     GCounterPayload::CasOk => {
@@ -244,16 +247,17 @@ impl Node<GCounterPayload> for GCounterNode {
                                 }
                                 OperationType::Write(write) => {
                                     // wip: Attempt to read and key does not exist (prior to writing the value)
-                                    self.send_seq_kv_cas_request(
+                                    self.send_seq_kv_request(
                                         output,
-                                        input.body.id.expect("Read request with no id"),
-                                        input.src,
-                                        SeqKvCas {
+                                        SeqKvPayload::Cas(SeqKvCas {
                                             key: "counter".to_string(),
                                             from: 0,
                                             to: write.value,
                                             put: true,
-                                        },
+                                        }),
+                                        input.body.id.expect("Read request with no id"),
+                                        input.src,
+                                        OperationType::Cas,
                                     )?;
                                 }
                                 _op => {
@@ -273,9 +277,10 @@ impl Node<GCounterPayload> for GCounterNode {
 }
 
 impl GCounterNode {
-    fn send_seq_kv_read_request(
+    fn send_seq_kv_request(
         &mut self,
         output: &mut StdoutLock,
+        payload: SeqKvPayload,
         in_reply_to: usize,
         src: String,
         op_type: OperationType,
@@ -287,44 +292,13 @@ impl GCounterNode {
             body: Body {
                 id: Some(self.msg_id),
                 in_reply_to: Some(in_reply_to),
-                payload: SeqKvPayload::Read(SeqKvRead {
-                    key: "counter".to_string(),
-                }),
+                payload,
             },
         }
         .send(output)
         .context("Sending seq kv read")?;
         self.pending_ops
             .insert(self.msg_id, PendingOperation { src, op_type });
-        Ok(())
-    }
-
-    fn send_seq_kv_cas_request(
-        &mut self,
-        output: &mut StdoutLock,
-        in_reply_to: usize,
-        src: String,
-        cas: SeqKvCas,
-    ) -> anyhow::Result<()> {
-        self.msg_id += 1;
-        Message {
-            src: self.id.clone(),
-            dst: String::from("seq-kv"),
-            body: Body {
-                id: Some(self.msg_id),
-                in_reply_to: Some(in_reply_to),
-                payload: SeqKvPayload::Cas(cas),
-            },
-        }
-        .send(output)
-        .context("Sending seq kv cas")?;
-        self.pending_ops.insert(
-            self.msg_id,
-            PendingOperation {
-                src,
-                op_type: OperationType::Cas,
-            },
-        );
         Ok(())
     }
 }
