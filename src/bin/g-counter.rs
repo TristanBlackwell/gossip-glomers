@@ -74,7 +74,7 @@ pub struct SeqKvCas {
 enum OperationType {
     Read,
     Write(OperationWrite),
-    Cas,
+    Cas(OperationWrite),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -82,9 +82,11 @@ pub struct OperationWrite {
     pub value: usize,
 }
 
+#[derive(Debug)]
 struct PendingOperation {
     src: String,
     op_type: OperationType,
+    client_msg_id: Option<usize>,
 }
 
 struct GCounterNode {
@@ -121,8 +123,8 @@ impl Node<GCounterPayload> for GCounterNode {
                             SeqKvPayload::Read(SeqKvRead {
                                 key: "counter".to_string(),
                             }),
-                            input.body.id.expect("Read request with no id"),
-                            input.src,
+                            input.body.id,
+                            input.src.clone(),
                             OperationType::Write(OperationWrite { value: add.delta }),
                         )?;
                     }
@@ -134,7 +136,7 @@ impl Node<GCounterPayload> for GCounterNode {
                             SeqKvPayload::Read(SeqKvRead {
                                 key: "counter".to_string(),
                             }),
-                            input.body.id.expect("Read request with no id"),
+                            input.body.id,
                             input.src,
                             OperationType::Read,
                         )?;
@@ -168,7 +170,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                     dst: pending_op.src,
                                     body: Body {
                                         id: Some(self.msg_id),
-                                        in_reply_to: input.body.in_reply_to,
+                                        in_reply_to: pending_op.client_msg_id,
                                         payload: GCounterPayload::ReadOk(ReadOk {
                                             value: read.value,
                                         }),
@@ -188,9 +190,9 @@ impl Node<GCounterPayload> for GCounterNode {
                                         // We successfully read the key so wouldn't expect an upsert behaviour here.
                                         put: false,
                                     }),
-                                    input.body.id.expect("Read request with no id"),
+                                    pending_op.client_msg_id,
                                     pending_op.src,
-                                    OperationType::Cas,
+                                    OperationType::Cas(OperationWrite { value: write.value }),
                                 )?;
                             }
                             _op => panic!("Unexpected operation from read ok - {:?}", _op),
@@ -204,14 +206,14 @@ impl Node<GCounterPayload> for GCounterNode {
                                 .expect("seq kv cas ok response with no reply to"),
                         ) {
                             match pending_op.op_type {
-                                OperationType::Cas => {
+                                OperationType::Cas(_) => {
                                     self.msg_id += 1;
                                     Message {
                                         src: self.id.clone(),
                                         dst: pending_op.src,
                                         body: Body {
                                             id: Some(self.msg_id),
-                                            in_reply_to: input.body.in_reply_to,
+                                            in_reply_to: pending_op.client_msg_id,
                                             payload: GCounterPayload::AddOk,
                                         },
                                     }
@@ -234,12 +236,13 @@ impl Node<GCounterPayload> for GCounterNode {
                                     // Attempt to read and key does not exist. We can return 0 since
                                     // this is equivalent to no key (at least in this use case).
                                     self.msg_id += 1;
+
                                     Message {
                                         src: self.id.clone(),
                                         dst: pending_op.src,
                                         body: Body {
                                             id: Some(self.msg_id),
-                                            in_reply_to: input.body.in_reply_to,
+                                            in_reply_to: pending_op.client_msg_id,
                                             payload: GCounterPayload::ReadOk(ReadOk { value: 0 }),
                                         },
                                     }
@@ -258,13 +261,28 @@ impl Node<GCounterPayload> for GCounterNode {
                                             to: write.value,
                                             put: true,
                                         }),
-                                        input.body.in_reply_to.expect("Read request with no id"),
+                                        pending_op.client_msg_id,
                                         pending_op.src,
-                                        OperationType::Cas,
+                                        OperationType::Cas(OperationWrite { value: write.value }),
                                     )?;
                                 }
-                                _op => {
-                                    panic!("error response from maelstrom - {:?}:{:?}", error, _op)
+                                OperationType::Cas(write) => {
+                                    if error.code == 22 {
+                                        // CAS value did not match
+                                        self.send_seq_kv_request(
+                                            output,
+                                            SeqKvPayload::Read(SeqKvRead {
+                                                key: "counter".to_string(),
+                                            }),
+                                            pending_op.client_msg_id,
+                                            pending_op.src,
+                                            OperationType::Write(OperationWrite {
+                                                value: write.value,
+                                            }),
+                                        )?;
+                                    } else {
+                                        panic!("error response from maelstrom - {:?}", error)
+                                    }
                                 }
                             }
                         }
@@ -284,24 +302,31 @@ impl GCounterNode {
         &mut self,
         output: &mut StdoutLock,
         payload: SeqKvPayload,
-        in_reply_to: usize,
+        in_reply_to: Option<usize>,
         src: String,
         op_type: OperationType,
     ) -> anyhow::Result<()> {
         self.msg_id += 1;
+
         Message {
             src: self.id.clone(),
             dst: String::from("seq-kv"),
             body: Body {
                 id: Some(self.msg_id),
-                in_reply_to: Some(in_reply_to),
+                in_reply_to,
                 payload,
             },
         }
         .send(output)
-        .context("Sending seq kv read")?;
-        self.pending_ops
-            .insert(self.msg_id, PendingOperation { src, op_type });
+        .context("Sending seq kv request")?;
+        self.pending_ops.insert(
+            self.msg_id,
+            PendingOperation {
+                src,
+                op_type,
+                client_msg_id: in_reply_to,
+            },
+        );
         Ok(())
     }
 }
