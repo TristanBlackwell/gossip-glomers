@@ -7,55 +7,27 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum GCounterPayload {
-    Add(Add),
+    /// Add to the counter.
+    Add { delta: usize },
+    /// Add was successfully absorbed.
     AddOk,
+    /// Read the current value of the counter.
     Read,
-    ReadOk(ReadOk),
+    /// Read response from sequential kv store.
+    ReadOk { value: usize },
+    /// Successful CAS operation from sequential kv store.
     CasOk,
-    Error(Error),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Add {
-    pub delta: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ReadOk {
-    pub value: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Error {
-    code: usize,
-    text: String,
+    /// Error response from sequential kv store.
+    Error { code: usize, text: String },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum SeqKvPayload {
-    Read(SeqKvRead),
-    ReadOk(SeqKvReadOk),
-    Write(SeqKvWrite),
-    WriteOk,
+    Read { key: String },
+    ReadOk { value: String },
     Cas(SeqKvCas),
     CasOk,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SeqKvRead {
-    pub key: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SeqKvReadOk {
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SeqKvWrite {
-    pub key: String,
-    pub value: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -73,8 +45,8 @@ pub struct SeqKvCas {
 #[derive(Debug, Clone)]
 enum OperationType {
     Read,
-    Write(OperationWrite),
-    Cas(OperationWrite),
+    Write { value: usize },
+    Cas { value: usize },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -115,17 +87,17 @@ impl Node<GCounterPayload> for GCounterNode {
         match input {
             Event::Message(input) => {
                 match input.body.payload {
-                    GCounterPayload::Add(add) => {
+                    GCounterPayload::Add { delta } => {
                         // Send a read request to the KV with our write operation. Once
                         // KV returns the read value we can perform a CAS.
                         self.send_seq_kv_request(
                             output,
-                            SeqKvPayload::Read(SeqKvRead {
+                            SeqKvPayload::Read {
                                 key: "counter".to_string(),
-                            }),
+                            },
                             input.body.id,
                             input.src.clone(),
-                            OperationType::Write(OperationWrite { value: add.delta }),
+                            OperationType::Write { value: delta },
                         )?;
                     }
                     GCounterPayload::AddOk => {}
@@ -133,15 +105,15 @@ impl Node<GCounterPayload> for GCounterNode {
                         // Send our read request to KV, the ok handler will return the value.
                         self.send_seq_kv_request(
                             output,
-                            SeqKvPayload::Read(SeqKvRead {
+                            SeqKvPayload::Read {
                                 key: "counter".to_string(),
-                            }),
+                            },
                             input.body.id,
                             input.src,
                             OperationType::Read,
                         )?;
                     }
-                    GCounterPayload::ReadOk(read) => {
+                    GCounterPayload::ReadOk { value } => {
                         if input.src != "seq-kv" {
                             panic!(
                                 "Received unsupported read ok operation '{}'. Only 'seq-kv' is implemented.",
@@ -171,28 +143,26 @@ impl Node<GCounterPayload> for GCounterNode {
                                     body: Body {
                                         id: Some(self.msg_id),
                                         in_reply_to: pending_op.client_msg_id,
-                                        payload: GCounterPayload::ReadOk(ReadOk {
-                                            value: read.value,
-                                        }),
+                                        payload: GCounterPayload::ReadOk { value },
                                     },
                                 }
                                 .send(output)
                                 .context("Sending read ok")?;
                             }
-                            OperationType::Write(write) => {
+                            OperationType::Write { value: write_value } => {
                                 // Was a write so with the latest value attempt the CAS operation.
                                 self.send_seq_kv_request(
                                     output,
                                     SeqKvPayload::Cas(SeqKvCas {
                                         key: "counter".to_string(),
-                                        from: read.value,
-                                        to: read.value + write.value,
+                                        from: value,
+                                        to: value + write_value,
                                         // We successfully read the key so wouldn't expect an upsert behaviour here.
                                         put: false,
                                     }),
                                     pending_op.client_msg_id,
                                     pending_op.src,
-                                    OperationType::Cas(OperationWrite { value: write.value }),
+                                    OperationType::Cas { value: write_value },
                                 )?;
                             }
                             _op => panic!("Unexpected operation from read ok - {:?}", _op),
@@ -206,7 +176,7 @@ impl Node<GCounterPayload> for GCounterNode {
                                 .expect("seq kv cas ok response with no reply to"),
                         ) {
                             match pending_op.op_type {
-                                OperationType::Cas(_) => {
+                                OperationType::Cas { value: _ } => {
                                     self.msg_id += 1;
                                     Message {
                                         src: self.id.clone(),
@@ -224,7 +194,7 @@ impl Node<GCounterPayload> for GCounterNode {
                             }
                         }
                     }
-                    GCounterPayload::Error(error) => {
+                    GCounterPayload::Error { code, text } => {
                         if let Some(pending_op) = self.pending_ops.remove(
                             &input
                                 .body
@@ -243,13 +213,13 @@ impl Node<GCounterPayload> for GCounterNode {
                                         body: Body {
                                             id: Some(self.msg_id),
                                             in_reply_to: pending_op.client_msg_id,
-                                            payload: GCounterPayload::ReadOk(ReadOk { value: 0 }),
+                                            payload: GCounterPayload::ReadOk { value: 0 },
                                         },
                                     }
                                     .send(output)
                                     .context("Sending seq kv read")?;
                                 }
-                                OperationType::Write(write) => {
+                                OperationType::Write { value } => {
                                     // Attempted to read they key (before our CAS operation as we need the current value)
                                     // and key does not exist. We can bypass this and send the CAS operation now since we
                                     // now know this is 0 and will insert.
@@ -258,30 +228,31 @@ impl Node<GCounterPayload> for GCounterNode {
                                         SeqKvPayload::Cas(SeqKvCas {
                                             key: "counter".to_string(),
                                             from: 0,
-                                            to: write.value,
+                                            to: value,
                                             put: true,
                                         }),
                                         pending_op.client_msg_id,
                                         pending_op.src,
-                                        OperationType::Cas(OperationWrite { value: write.value }),
+                                        OperationType::Cas { value },
                                     )?;
                                 }
-                                OperationType::Cas(write) => {
-                                    if error.code == 22 {
+                                OperationType::Cas { value } => {
+                                    if code == 22 {
                                         // CAS value did not match
                                         self.send_seq_kv_request(
                                             output,
-                                            SeqKvPayload::Read(SeqKvRead {
+                                            SeqKvPayload::Read {
                                                 key: "counter".to_string(),
-                                            }),
+                                            },
                                             pending_op.client_msg_id,
                                             pending_op.src,
-                                            OperationType::Write(OperationWrite {
-                                                value: write.value,
-                                            }),
+                                            OperationType::Write { value },
                                         )?;
                                     } else {
-                                        panic!("error response from maelstrom - {:?}", error)
+                                        panic!(
+                                            "error response from maelstrom - code: {}, text: {}",
+                                            code, text
+                                        )
                                     }
                                 }
                             }
